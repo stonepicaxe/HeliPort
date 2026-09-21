@@ -20,6 +20,7 @@
 #include <IOKit/IOTypes.h>
 #include "Common.h"
 #include <inttypes.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 

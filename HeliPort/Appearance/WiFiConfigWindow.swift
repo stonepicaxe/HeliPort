@@ -381,6 +381,15 @@ class WiFiConfigWindow: NSWindow {
             super.close()
         }
     }
+    private var currentPassword: String {
+        if !passwdInputBox.isHidden && !passwdInputBox.stringValue.isEmpty {
+            return passwdInputBox.stringValue
+        }
+        if !passwdSecureBox.stringValue.isEmpty {
+            return passwdSecureBox.stringValue
+        }
+        return passwdInputBox.stringValue
+    }
 }
 
 // MARK: NSTextFieldDelegate
@@ -391,27 +400,22 @@ extension WiFiConfigWindow: NSTextFieldDelegate {
         // if clear password box is visible, copy password to secure box
         if !passwdInputBox.isHidden {
             passwdSecureBox.stringValue = passwdInputBox.stringValue
-        }
-
-        // if clear password box is not visible, copy password from secure box to password box
-        if passwdInputBox.isHidden {
+        } else {
             passwdInputBox.stringValue = passwdSecureBox.stringValue
         }
 
         // trim secure box to 64 characters
         if passwdSecureBox.stringValue.count > 64 {
-            passwdSecureBox.stringValue = String(passwdSecureBox.stringValue[..<passwdSecureBox.stringValue.index(
-                passwdSecureBox.stringValue.startIndex,
-                offsetBy: 64
-            )])
+            let trimmed = String(passwdSecureBox.stringValue.prefix(64))
+            passwdSecureBox.stringValue = trimmed
+            passwdInputBox.stringValue = trimmed
         }
 
         // trim password box to 64 characters
         if passwdInputBox.stringValue.count > 64 {
-            passwdInputBox.stringValue = String(passwdInputBox.stringValue[..<passwdInputBox.stringValue.index(
-                passwdInputBox.stringValue.startIndex,
-                offsetBy: 64
-            )])
+            let trimmed = String(passwdInputBox.stringValue.prefix(64))
+            passwdInputBox.stringValue = trimmed
+            passwdSecureBox.stringValue = trimmed
         }
 
         controlJoinButton()
@@ -431,9 +435,7 @@ extension WiFiConfigWindow: NSTextFieldDelegate {
         }
 
         // password is too short, less than 8 characters
-        guard !passwdInputBox.isHidden || !passwdSecureBox.isHidden,
-            passwdSecureBox.stringValue.count >= 8,
-            passwdInputBox.stringValue.count >= 8  else {
+        guard currentPassword.count >= 8 else {
             rightButton.isEnabled = false
             return
         }
@@ -501,8 +503,13 @@ extension WiFiConfigWindow {
     }
 
     @objc private func showPasswd(_ sender: Any?) {
-        passwdSecureBox.stringValue = passwdInputBox.stringValue
         let showPass = isShowPasswd.state == .on
+
+        if showPass {
+            passwdInputBox.stringValue = passwdSecureBox.stringValue
+        } else {
+            passwdSecureBox.stringValue = passwdInputBox.stringValue
+        }
 
         if showPass && windowState == .viewCredentialsWiFi && !authenticated {
             let auth = LAContext()
@@ -535,14 +542,14 @@ extension WiFiConfigWindow {
 
     private func connect() {
         guard let network = networkInfo else { return }
-        network.auth.password = passwdInputBox.stringValue
+        network.auth.password = currentPassword
         getAuthInfoCallback?(network.auth, isSave.state == .on)
         close()
     }
 
     private func joinWiFi() {
         let network = NetworkInfo(ssid: networkBox.stringValue)
-        network.auth.password = passwdInputBox.stringValue
+        network.auth.password = currentPassword
 
         switch securityPop.title {
         case .none:

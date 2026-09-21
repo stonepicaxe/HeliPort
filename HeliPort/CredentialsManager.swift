@@ -29,34 +29,52 @@ final class CredentialsManager {
 
     func save(_ network: NetworkInfo) {
         guard let networkAuthJson = try? String(decoding: JSONEncoder().encode(network.auth), as: UTF8.self) else {
+            Log.error("Failed to encode network auth for \(network.ssid)")
             return
         }
-        network.auth = NetworkAuth()
-        let entity = NetworkInfoStorageEntity(network)
+
+        // Do not mutate network.auth in place; use a separate instance for comment metadata
+        let storageNetwork = NetworkInfo(ssid: network.ssid, rssi: network.rssi)
+        let entity = NetworkInfoStorageEntity(storageNetwork)
         guard let entityJson = try? String(decoding: JSONEncoder().encode(entity), as: UTF8.self) else {
+            Log.error("Failed to encode storage entity for \(network.ssid)")
             return
         }
 
         ssidCache.removeObject(forKey: ssidCacheKey)
 
         Log.debug("Saving password for network \(network.ssid)")
-        try? keychain.comment(entityJson).set(networkAuthJson, key: network.keychainKey)
+        do {
+            try keychain.comment(entityJson).set(networkAuthJson, key: network.keychainKey)
+        } catch {
+            Log.error("Failed to save credentials for \(network.ssid): \(error)")
+        }
     }
 
     func get(_ network: NetworkInfo) -> NetworkAuth? {
-        guard let password = keychain[string: network.keychainKey],
-            let jsonData = password.data(using: .utf8) else {
-            Log.debug("No stored password for network \(network.ssid)")
+        do {
+            guard let password = try keychain.get(network.keychainKey),
+                  let jsonData = password.data(using: .utf8) else {
+                Log.debug("No stored password for network \(network.ssid)")
+                return nil
+            }
+
+            Log.debug("Loading password for network \(network.ssid)")
+            return try JSONDecoder().decode(NetworkAuth.self, from: jsonData)
+        } catch {
+            Log.error("Error retrieving password for network \(network.ssid): \(error)")
             return nil
         }
-
-        Log.debug("Loading password for network \(network.ssid)")
-        return try? JSONDecoder().decode(NetworkAuth.self, from: jsonData)
     }
 
     func remove(_ network: NetworkInfo) {
         Log.debug("Removing \(network.ssid) from keychain")
-        try? keychain.remove(network.keychainKey)
+        ssidCache.removeObject(forKey: ssidCacheKey)
+        do {
+            try keychain.remove(network.keychainKey)
+        } catch {
+            Log.error("Failed to remove \(network.ssid) from keychain: \(error)")
+        }
     }
 
     func getStorageFromSsid(_ ssid: String) -> NetworkInfoStorageEntity? {
@@ -92,7 +110,11 @@ final class CredentialsManager {
             return
         }
 
-        try? keychain.comment(entityJson).set(authJson, key: ssid)
+        do {
+            try keychain.comment(entityJson).set(authJson, key: ssid)
+        } catch {
+            Log.error("Failed to set auto-join for \(ssid): \(error)")
+        }
     }
 
     func setPriority(_ ssid: String, _ priority: Int) {
@@ -108,7 +130,11 @@ final class CredentialsManager {
             return
         }
 
-        try? keychain.comment(entityJson).set(authJson, key: ssid)
+        do {
+            try keychain.comment(entityJson).set(authJson, key: ssid)
+        } catch {
+            Log.error("Failed to set priority for \(ssid): \(error)")
+        }
     }
 
     func getSavedNetworks() -> [NetworkInfo] {
@@ -119,7 +145,10 @@ final class CredentialsManager {
         }.sorted {
             $0.order < $1.order
         }.map { entity in
-            entity.network
+            if let auth = getAuthFromSsid(entity.network.ssid) {
+                entity.network.auth = auth
+            }
+            return entity.network
         }
     }
 

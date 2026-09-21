@@ -9,6 +9,8 @@ jobs:
 
   CI:
     runs-on: macos-latest
+    permissions:
+      contents: write
 
     steps:
     - uses: actions/checkout@v4
@@ -31,7 +33,7 @@ jobs:
     - name: Manage Version
       if: (github.event_name == 'push' && github.ref_name == 'master') || github.event_name == 'workflow_dispatch'
       run: |
-        git fetch --prune --unshallow --tags
+        git fetch --prune --unshallow --tags || true
         GIT_SHA="$(git rev-parse --short HEAD)"
         CUR_TAG="$(git tag -l | grep -i 'alpha' | tail -1)"
         eval $(grep -m 1 "MARKETING_VERSION =" HeliPort.xcodeproj/project.pbxproj | tr -d ';' | tr -d '\t' | tr -d " ")
@@ -137,6 +139,14 @@ jobs:
         mkdir Artifacts
         cp -R ${XCBUILD_PATH}/*.dmg Artifacts
 
+    - name: Upload HeliPort DMG
+      if: (github.event_name == 'push' && github.ref_name == 'master') || github.event_name == 'workflow_dispatch'
+      uses: actions/upload-artifact@v4
+      with:
+        name: HeliPort-DMG
+        path: Artifacts/*.dmg
+        if-no-files-found: warn
+
     - name: Setup Prerelease Variables
       if: github.event_name == 'push' && github.ref_name == 'master'
       run: |
@@ -158,10 +168,15 @@ jobs:
       if: (github.event_name == 'push' && github.ref_name == 'master') || github.event_name == 'workflow_dispatch'
       run: |
         echo '### The latest updates are:' >> ReleaseNotes.md
-        git log -"$(git rev-list --count $(git rev-list -1 "$(git tag -l | grep -v 'alpha' | tail -1)")..HEAD)" --format="- %H %s" | grep -v '.git\|Merge\|yml\|CI' | sed  '/^$/d' >> ReleaseNotes.md
+        TAG="$(git tag -l | grep -v 'alpha' | tail -1)"
+        if [[ -n "$TAG" ]]; then
+          git log -"$(git rev-list --count $(git rev-list -1 "$TAG")..HEAD)" --format="- %H %s" | grep -v '.git\|Merge\|yml\|CI' | sed '/^$/d' >> ReleaseNotes.md || true
+        else
+          git log -n 10 --format="- %H %s" | grep -v '.git\|Merge\|yml\|CI' | sed '/^$/d' >> ReleaseNotes.md || true
+        fi
 
     - name: Delete Old Prerelease
-      if: (github.event_name == 'push' && github.ref_name == 'master') || github.event_name == 'workflow_dispatch'
+      if: ((github.event_name == 'push' && github.ref_name == 'master') || github.event_name == 'workflow_dispatch') && env.OLD_PRE_TAG != 'NULL'
       run: gh release delete ${{ env.OLD_PRE_TAG }} --cleanup-tag
       continue-on-error: true
       env:
@@ -212,6 +227,7 @@ jobs:
     - name: Publish GitHub Release
       if: ((github.event_name == 'push' && github.ref_name == 'master') || github.event_name == 'workflow_dispatch') && contains(github.event.head_commit.message, 'Bump version') == false
       uses: ncipollo/release-action@v1
+      continue-on-error: true
       with:
         allowUpdates: true
         replacesArtifacts: true

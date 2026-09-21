@@ -202,10 +202,16 @@ final class StatusMenuModern: StatusMenuBase, StatusMenuItems {
             (self.knownSectionItem.view as? SectionMenuItemView)?
                 .title = (knownList.count > 1 ? .Modern.knownNetworks : .Modern.knownNetwork)
 
+            // If disconnected and no known networks in range, auto-expand Other Networks
+            if !self.isNetworkConnected && knownList.isEmpty && !otherList.isEmpty {
+                (self.otherSectionItem.view as? SectionMenuItemView)?.isExpanded = true
+            }
+
+            let otherExpanded = (self.otherSectionItem.view as? SectionMenuItemView)?.isExpanded ?? true
             if otherList.isEmpty {
                 self.manuallyJoinItem.isHidden = false
             } else {
-                self.manuallyJoinItem.isHidden = !(self.otherSectionItem.view as? SectionMenuItemView)!.isExpanded
+                self.manuallyJoinItem.isHidden = !otherExpanded
             }
             self.otherSectionItem.isHidden = otherList.isEmpty
 
@@ -215,10 +221,13 @@ final class StatusMenuModern: StatusMenuBase, StatusMenuItems {
 
             self.processNetworkList(from: knownList, to: &self.knownNetworkItemList,
                                     insertAt: self.headerLength, staInfo)
+
+            let otherSectionIndex = self.index(of: self.otherSectionItem)
+            let otherInsertAt = otherSectionIndex >= 0 ? (otherSectionIndex + 1) : (self.headerLength + self.knownNetworkItemList.count + 2)
+
             self.processNetworkList(from: otherList, to: &self.otherNetworkItemList,
-                                    insertAt: (self.headerLength + self.knownNetworkItemList.count
-                                               + 2 /* separator + section header */),
-                                    staInfo, hidden: !(self.otherSectionItem.view as? SectionMenuItemView)!.isExpanded)
+                                    insertAt: otherInsertAt,
+                                    staInfo, hidden: !otherExpanded)
         }
     }
 
@@ -234,8 +243,10 @@ final class StatusMenuModern: StatusMenuBase, StatusMenuItems {
         super.menuWillOpen(menu)
 
         guard isNetworkCardEnabled else { return }
-        (otherSectionItem.view as? SectionMenuItemView)?
-            .isExpanded = (!self.isNetworkConnected && self.knownNetworkItemList.isEmpty)
+        let hasVisibleKnownNetworks = self.knownNetworkItemList.contains { !$0.isHidden && $0.isEnabled }
+        if !self.isNetworkConnected && !hasVisibleKnownNetworks {
+            (otherSectionItem.view as? SectionMenuItemView)?.isExpanded = true
+        }
     }
 
     override func addClickItem(_ item: NSMenuItem) {
@@ -266,14 +277,13 @@ final class StatusMenuModern: StatusMenuBase, StatusMenuItems {
     }
 
     override func setCurrentNetworkItem(with info: StatusMenuBase.StationInfo) {
-        // connected -> disconnected
+        // connected -> disconnected: only unhide the network that was previously connected
         if !currentNetworkItem.isHidden && !info.isNetworkConnected {
-            for index in self.headerLength ..<
-                    min(self.items.count,
-                        self.headerLength + self.knownNetworkItemList.count)
-            where self.items[index].view is WifiMenuItemView {
-                self.items[index].isHidden = false
-                self.items[index].isEnabled = true
+            if let staSSID = (currentNetworkItem.view as? WifiMenuItemView)?.networkInfo.ssid {
+                for item in self.knownNetworkItemList where (item.view as? WifiMenuItemView)?.networkInfo.ssid == staSSID {
+                    item.isHidden = false
+                    item.isEnabled = true
+                }
             }
         }
 

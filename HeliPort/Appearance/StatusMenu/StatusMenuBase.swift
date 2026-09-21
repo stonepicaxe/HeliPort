@@ -36,8 +36,9 @@ class StatusMenuBase: NSMenu, NSMenuDelegate {
     private let statusUpdatePeriod: Double = 2
 
     var headerLength: Int = 0
-    private var networkListUpdateTimer: Timer?
-    private var statusUpdateTimer: Timer?
+    private let timerQueue = DispatchQueue(label: "org.openintelwireless.heliport.statusMenuTimerQueue", qos: .default)
+    private var networkListUpdateTimer: DispatchSourceTimer?
+    private var statusUpdateTimer: DispatchSourceTimer?
 
     // One instance at a time
     private lazy var preferenceWindow = PrefsWindow()
@@ -184,26 +185,24 @@ class StatusMenuBase: NSMenu, NSMenuDelegate {
         (self as? StatusMenuItems)?.setupMenu()
         getDeviceInfo()
 
-        DispatchQueue.global(qos: .default).async {
-            self.statusUpdateTimer = Timer.scheduledTimer(
-                timeInterval: self.statusUpdatePeriod,
-                target: self,
-                selector: #selector(self.updateStatus),
-                userInfo: nil,
-                repeats: true
-            )
-
-            self.statusUpdateTimer?.fire()
-            let currentRunLoop = RunLoop.current
-            currentRunLoop.add(self.statusUpdateTimer!, forMode: .common)
-            currentRunLoop.run()
+        let statusTimer = DispatchSource.makeTimerSource(queue: timerQueue)
+        statusTimer.schedule(deadline: .now(), repeating: statusUpdatePeriod)
+        statusTimer.setEventHandler { [weak self] in
+            self?.updateStatus()
         }
+        statusTimer.resume()
+        statusUpdateTimer = statusTimer
 
         NSApp.servicesProvider = self
     }
 
     required init(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        statusUpdateTimer?.cancel()
+        networkListUpdateTimer?.cancel()
     }
 
     // - MARK: NSMenuDelegate
@@ -216,24 +215,20 @@ class StatusMenuBase: NSMenu, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         showAllOptions = (NSApp.currentEvent?.modifierFlags.contains(.option)) ?? false
 
-        DispatchQueue.global(qos: .default).async {
-            self.updateStationItems()
-            self.networkListUpdateTimer = Timer.scheduledTimer(
-                timeInterval: self.networkListUpdatePeriod,
-                target: self,
-                selector: #selector(self.updateNetworkList),
-                userInfo: nil,
-                repeats: true
-            )
-            self.networkListUpdateTimer?.fire()
-            let currentRunLoop = RunLoop.current
-            currentRunLoop.add(self.networkListUpdateTimer!, forMode: .common)
-            currentRunLoop.run()
+        updateStationItems()
+        networkListUpdateTimer?.cancel()
+        let listTimer = DispatchSource.makeTimerSource(queue: timerQueue)
+        listTimer.schedule(deadline: .now(), repeating: networkListUpdatePeriod)
+        listTimer.setEventHandler { [weak self] in
+            self?.updateNetworkList()
         }
+        listTimer.resume()
+        networkListUpdateTimer = listTimer
     }
 
     func menuDidClose(_ menu: NSMenu) {
-        networkListUpdateTimer?.invalidate()
+        networkListUpdateTimer?.cancel()
+        networkListUpdateTimer = nil
         (menu.highlightedItem?.view as? SelectableMenuItemView)?.isMouseOver = false
     }
 

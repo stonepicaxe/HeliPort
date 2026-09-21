@@ -23,8 +23,24 @@ final class NetworkManager {
         ITL80211_SECURITY_WPA_PERSONAL,
         ITL80211_SECURITY_WPA_PERSONAL_MIXED,
         ITL80211_SECURITY_WPA2_PERSONAL,
-        ITL80211_SECURITY_PERSONAL
+        ITL80211_SECURITY_PERSONAL,
+        ITL80211_SECURITY_WPA3_PERSONAL,
+        ITL80211_SECURITY_WPA3_TRANSITION
     ]
+
+    private static let connectionQueue = DispatchQueue(label: "org.openintelwireless.heliport.connectionQueue")
+    private static var _isConnecting = false
+    public static var isConnecting: Bool {
+        get {
+            return connectionQueue.sync { _isConnecting }
+        }
+        set {
+            connectionQueue.sync { _isConnecting = newValue }
+        }
+    }
+
+    private static var cachedNetworkList = Set<NetworkInfo>()
+    private static let scanLock = NSLock()
 
     static func connect(networkInfo: NetworkInfo, saveNetwork: Bool = false,
                         _ callback: ((_ result: Bool) -> Void)? = nil) {
@@ -38,8 +54,11 @@ final class NetworkManager {
 
         let getAuthInfoCallback: (_ auth: NetworkAuth, _ savePassword: Bool) -> Void = { auth, savePassword in
             DispatchQueue.global(qos: .background).async {
+                isConnecting = true
                 StatusBarIcon.shared().connecting()
                 let result = connect_network(networkInfo.ssid, auth.password)
+                isConnecting = false
+
                 DispatchQueue.main.async {
                     if result {
                         if savePassword {
@@ -47,6 +66,9 @@ final class NetworkManager {
                         }
                     } else {
                         Log.error("Failed to connect to: \(networkInfo.ssid)")
+                        StatusBarIcon.shared().disconnected()
+                        let alert = Alert(text: String(format: NSLocalizedString("Failed to connect to \"%@\""), networkInfo.ssid))
+                        alert.show()
                     }
                     callback?(result)
                 }
@@ -105,27 +127,51 @@ final class NetworkManager {
 
     private static func scanNetwork(callback: @escaping (_ networkInfoList: Set<NetworkInfo>) -> Void) {
         DispatchQueue.global(qos: .background).async {
+            if isConnecting {
+                Log.debug("Connection in progress, skipping scan and returning cached networks")
+                scanLock.lock()
+                let cached = cachedNetworkList
+                scanLock.unlock()
+                DispatchQueue.main.async {
+                    callback(cached)
+                }
+                return
+            }
+
             var list = network_info_list_t()
-            get_network_list(&list)
+            let scanSuccess = get_network_list(&list)
 
             var result = Set<NetworkInfo>()
-            let networks = Mirror(reflecting: list.networks).children.map({ $0.value }).prefix(Int(list.count))
+            if scanSuccess && list.count > 0 {
+                let networks = Mirror(reflecting: list.networks).children.map({ $0.value }).prefix(Int(list.count))
 
-            for element in networks {
-                guard let network = element as? ioctl_network_info else {
-                    continue
-                }
-                let ssid = String(ssid: network.ssid)
-                guard !ssid.isEmpty else {
-                    continue
+                for element in networks {
+                    guard let network = element as? ioctl_network_info else {
+                        continue
+                    }
+                    let ssid = String(ssid: network.ssid)
+                    guard !ssid.isEmpty else {
+                        continue
+                    }
+
+                    let networkInfo = NetworkInfo(
+                        ssid: ssid,
+                        rssi: Int(network.rssi)
+                    )
+                    networkInfo.auth.security = getSecurityType(network)
+                    result.insert(networkInfo)
                 }
 
-                let networkInfo = NetworkInfo(
-                    ssid: ssid,
-                    rssi: Int(network.rssi)
-                )
-                networkInfo.auth.security = getSecurityType(network)
-                result.insert(networkInfo)
+                scanLock.lock()
+                cachedNetworkList = result
+                scanLock.unlock()
+            } else {
+                scanLock.lock()
+                if !cachedNetworkList.isEmpty {
+                    Log.debug("Scan returned empty or busy; retaining cached networks")
+                    result = cachedNetworkList
+                }
+                scanLock.unlock()
             }
 
             DispatchQueue.main.async {
@@ -134,29 +180,42 @@ final class NetworkManager {
         }
     }
 
+    private static let autoJoinQueue = DispatchQueue(label: "org.openintelwireless.heliport.autoJoinQueue", qos: .background)
+    private static var autoJoinTimer: DispatchSourceTimer?
+    private static let autoJoinLock = NSLock()
+
     static func scanSavedNetworks() {
-        DispatchQueue.global(qos: .background).async {
+        autoJoinQueue.async {
+            autoJoinLock.lock()
+            autoJoinTimer?.cancel()
+            autoJoinTimer = nil
+
             let savedNetworks: [NetworkInfo] = CredentialsManager.instance.getSavedNetworks()
             guard savedNetworks.count > 0 else {
+                autoJoinLock.unlock()
                 Log.debug("No network saved for auto join")
                 return
             }
-            let scanTimer: Timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { timer in
+
+            let timer = DispatchSource.makeTimerSource(queue: autoJoinQueue)
+            timer.schedule(deadline: .now(), repeating: 5.0)
+            timer.setEventHandler {
+                guard !isConnecting else { return }
                 NetworkManager.scanNetwork { networkList in
                     let targetNetworks = savedNetworks.filter { networkList.contains($0) }
                     if targetNetworks.count > 0 {
-                        // This will stop the timer completely
-                        timer.invalidate()
+                        autoJoinLock.lock()
+                        autoJoinTimer?.cancel()
+                        autoJoinTimer = nil
+                        autoJoinLock.unlock()
                         Log.debug("Auto join timer stopped")
                         connectSavedNetworks(networks: targetNetworks)
                     }
                 }
             }
-            // Start executing code inside the timer immediately
-            scanTimer.fire()
-            let currentRunLoop = RunLoop.current
-            currentRunLoop.add(scanTimer, forMode: .common)
-            currentRunLoop.run()
+            autoJoinTimer = timer
+            autoJoinLock.unlock()
+            timer.resume()
         }
     }
 
@@ -239,8 +298,26 @@ final class NetworkManager {
         return isReachable && (!needsConnection || canConnectWithoutUserInteraction)
     }
 
+    private static var cachedRouterAddress: (bsd: String, address: String?, timestamp: Date)?
+    private static let routerCacheLock = NSLock()
+
     static func getRouterAddress(bsd: String) -> String? {
-        return getRouterAddressFromSysctl(bsd) ?? getRouterAddressFromNetstat(bsd)
+        routerCacheLock.lock()
+        if let cache = cachedRouterAddress,
+           cache.bsd == bsd,
+           Date().timeIntervalSince(cache.timestamp) < 5.0 {
+            routerCacheLock.unlock()
+            return cache.address
+        }
+        routerCacheLock.unlock()
+
+        let address = getRouterAddressFromSysctl(bsd) ?? getRouterAddressFromNetstat(bsd)
+
+        routerCacheLock.lock()
+        cachedRouterAddress = (bsd: bsd, address: address, timestamp: Date())
+        routerCacheLock.unlock()
+
+        return address
     }
 
     // from https://stackoverflow.com/questions/30748480/swift-get-devices-wifi-ip-address/30754194#30754194

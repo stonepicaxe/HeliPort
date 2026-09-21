@@ -57,50 +57,62 @@ class StatusBarIcon {
 
     func off() {
         stopTimer()
-        statusBar.button?.image = icons.off
+        DispatchQueue.main.async {
+            self.statusBar.button?.image = self.icons.off
+        }
     }
 
     func connected() {
         stopTimer()
-        statusBar.button?.image = icons.connected
+        DispatchQueue.main.async {
+            self.statusBar.button?.image = self.icons.connected
+        }
     }
 
     func disconnected() {
         stopTimer()
-        statusBar.button?.image = icons.disconnected
+        DispatchQueue.main.async {
+            self.statusBar.button?.image = self.icons.disconnected
+        }
     }
 
     func connecting() {
-        guard timer == nil else { return }
-        tickIndex = 0
-        tickDirection = 1
-        DispatchQueue.global(qos: .default).async {
-            self.timer = Timer.scheduledTimer(
+        DispatchQueue.main.async {
+            guard self.timer == nil else { return }
+            self.tickIndex = 0
+            self.tickDirection = 1
+            let timer = Timer(
                 timeInterval: 0.3,
                 target: self,
                 selector: #selector(self.tick),
                 userInfo: nil,
                 repeats: true
             )
-            self.timer?.fire()
-            RunLoop.current.add(self.timer!, forMode: .common)
-            RunLoop.current.run()
+            RunLoop.main.add(timer, forMode: .common)
+            self.timer = timer
+            self.tick()
         }
     }
 
     func warning() {
         stopTimer()
-        statusBar.button?.image = icons.warning
+        DispatchQueue.main.async {
+            self.statusBar.button?.image = self.icons.warning
+        }
     }
 
     func error() {
         stopTimer()
-        statusBar.button?.image = #imageLiteral(resourceName: "WiFiStateError")
+        DispatchQueue.main.async {
+            self.statusBar.button?.image = #imageLiteral(resourceName: "WiFiStateError")
+        }
     }
 
     func signalStrength(rssi: Int16) {
         stopTimer()
-        statusBar.button?.image = icons.getRssiImage(rssi)
+        DispatchQueue.main.async {
+            self.statusBar.button?.image = self.icons.getRssiImage(rssi)
+        }
     }
 
     func getRssiImage(rssi: Int16) -> NSImage? {
@@ -108,21 +120,26 @@ class StatusBarIcon {
     }
 
     @objc private func tick() {
-        DispatchQueue.main.async {
-            if let transition = self.icons.transition {
-                self.statusBar.button?.layer?.add(transition, forKey: kCATransition)
-            }
-            self.statusBar.button?.image = self.icons.scanning[self.tickIndex]
+        if let transition = self.icons.transition {
+            self.statusBar.button?.layer?.add(transition, forKey: kCATransition)
+        }
+        self.statusBar.button?.image = self.icons.scanning[self.tickIndex]
 
-            self.tickIndex += self.tickDirection
-            if self.tickIndex == 0 || self.tickIndex == self.icons.scanning.endIndex - 1 {
-                self.tickDirection *= -1
-            }
+        self.tickIndex += self.tickDirection
+        if self.tickIndex == 0 || self.tickIndex == self.icons.scanning.endIndex - 1 {
+            self.tickDirection *= -1
         }
     }
 
     private func stopTimer() {
-        timer?.invalidate()
-        timer = nil
+        if Thread.isMainThread {
+            timer?.invalidate()
+            timer = nil
+        } else {
+            DispatchQueue.main.async {
+                self.timer?.invalidate()
+                self.timer = nil
+            }
+        }
     }
 }
