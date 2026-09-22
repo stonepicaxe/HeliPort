@@ -79,8 +79,7 @@ final class StatusMenuModern: StatusMenuBase, StatusMenuItems {
         toggleLaunchItem,
         checkUpdateItem,
         quitSeparator,
-        aboutItem,
-        quitItem
+        aboutItem
     ]
 
     lazy var notImplementedItems: [NSMenuItem] = [
